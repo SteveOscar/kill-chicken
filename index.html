@@ -1,0 +1,541 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Bouncy Ball Physics</title>
+    <style>
+        canvas {
+            border: 1px solid #ccc;
+            background: #f0f0f0;
+            border-radius: 10px;
+        }
+        body {
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            align-items: center;
+            height: 100vh;
+            margin: 0;
+            background: linear-gradient(135deg, #74ebd5, #acb6e5);
+        }
+        #controls {
+            margin-top: 20px;
+            text-align: center;
+        }
+        label, #instructions {
+            font-family: Arial, sans-serif;
+            color: #333;
+        }
+        #instructions {
+            margin-top: 10px;
+            font-size: 18px;
+            max-width: 600px;
+        }
+    </style>
+</head>
+<body>
+    <canvas id="gameCanvas" width="600" height="600"></canvas>
+    <div id="controls">
+        <label for="gravitySlider">Gravity Strength: <span id="gravityValue">9.8</span> m/s²</label>
+        <input type="range" id="gravitySlider" min="1" max="20" step="1" value="9.8">
+        <div id="instructions">
+            Goal: Kill the chicken by kicking the ball into it!<br>
+            Controls: Use arrow keys to kick the ball (↑ ↓ ← →)<br>
+            Adjust gravity with the slider (meters/s²)!
+        </div>
+    </div>
+    <script>
+        const canvas = document.getElementById('gameCanvas');
+        const ctx = canvas.getContext('2d');
+
+        // Physics constants
+        const BALL_MASS = 1.0;
+        const PIXELS_PER_METER = 100;
+        let GRAVITY = 9.8 * PIXELS_PER_METER; // 980 pixels/s²
+        const FRICTION_COEFF = 0.1; // Friction coefficient for collisions
+        const KICK_VELOCITY = 500; // pixels/s
+        const TIME_STEP = 1 / 60;
+        const MIN_SPEED_FOR_SPIN = 10; // Lateral speed threshold for spin visualization
+        const MIN_IMPULSE_FOR_PARTICLES = 50; // Impulse threshold for particles
+        const DRAG_COEFF = 0.99; // Air resistance coefficient
+        const MAGNUS_COEFF = 0.01; // Magnus effect coefficient
+
+        // Ball properties
+        let ball = {
+            x: 300,
+            y: 300,
+            radius: 20,
+            vx: 0,
+            vy: 0,
+            omega: 0, // Angular velocity in radians per second
+            angle: 0  // Cumulative angle for spin visualization
+        };
+
+        // Game objects
+        const obstacles = [];
+        const particles = [];
+        const bloodParticles = [];
+        const OBSTACLE_COUNT = 5;
+        let chicken = {
+            baseX: 250,
+            y: 50,
+            width: 40,
+            height: 40,
+            speed: 0.005,
+            amplitude: 250
+        };
+        let gameWon = false;
+        let victoryTimer = 0;
+        let kickDirection = { x: 0, y: 0 };
+        let lastKickTime = 0;
+        let accumulator = 0;
+        let lastTime = performance.now();
+
+        // Gravity slider setup
+        const gravitySlider = document.getElementById('gravitySlider');
+        const gravityValue = document.getElementById('gravityValue');
+        gravitySlider.addEventListener('input', () => {
+            GRAVITY = parseFloat(gravitySlider.value) * PIXELS_PER_METER;
+            gravityValue.textContent = gravitySlider.value;
+        });
+
+        // Create random obstacles
+        function createObstacles() {
+            obstacles.length = 0;
+            const expressions = ['smile', 'frown', 'neutral', 'surprise'];
+            for (let i = 0; i < OBSTACLE_COUNT; i++) {
+                obstacles.push({
+                    x: Math.random() * (canvas.width - 100) + 50,
+                    y: Math.random() * (canvas.height - 200) + 150,
+                    width: Math.random() * 50 + 30,
+                    height: Math.random() * 50 + 30,
+                    color: `hsl(${Math.random() * 360}, 70%, 60%)`,
+                    baseX: 0,
+                    speed: Math.random() * 0.005 + 0.005,
+                    amplitude: Math.random() * 50 + 30,
+                    expression: expressions[Math.floor(Math.random() * expressions.length)]
+
+                });
+                obstacles[i].baseX = obstacles[i].x;
+                
+            }
+        }
+
+        // Particle classes
+        class Particle {
+            constructor(x, y) {
+                this.x = x;
+                this.y = y;
+                this.size = Math.random() * 5 + 2;
+                this.vx = (Math.random() - 0.5) * 8;
+                this.vy = (Math.random() - 0.5) * 8;
+                this.life = 20;
+                this.color = `hsl(${180 + Math.random() * 60}, 80%, 60%)`; // Blue-green range (180–240)
+            }
+            update(dt) {
+                this.x += this.vx * dt * 60;
+                this.y += this.vy * dt * 60;
+                this.life -= dt * 60;
+            }
+            draw() {
+                ctx.fillStyle = `${this.color}${Math.floor(this.life/20 * 255).toString(16).padStart(2, '0')}`;
+                ctx.beginPath();
+                ctx.arc(this.x, this.y, this.size, 0, Math.PI * 2);
+                ctx.fill();
+            }
+        }
+
+        class BloodParticle {
+            constructor(x, y) {
+                this.x = x;
+                this.y = y;
+                this.size = Math.random() * 5 + 3;
+                this.vx = (Math.random() - 0.5) * 6 * PIXELS_PER_METER;
+                this.vy = (Math.random() - 0.5) * 6 * PIXELS_PER_METER;
+                this.life = 30;
+            }
+            update(dt) {
+                this.x += this.vx * dt;
+                this.y += this.vy * dt;
+                this.vy += GRAVITY * dt;
+                this.life -= dt * 60;
+            }
+            draw() {
+                ctx.fillStyle = `rgba(200, 0, 0, ${this.life/30})`;
+                ctx.beginPath();
+                ctx.arc(this.x, this.y, this.size, 0, Math.PI * 2);
+                ctx.fill();
+            }
+        }
+
+        // Handle keyboard input
+        document.addEventListener('keydown', (e) => {
+            if (!gameWon && Date.now() - lastKickTime > 100) {
+                switch(e.key) {
+                    case 'ArrowUp': kickDirection.y = -1; break;
+                    case 'ArrowDown': kickDirection.y = 1; break;
+                    case 'ArrowLeft': kickDirection.x = -1; break;
+                    case 'ArrowRight': kickDirection.x = 1; break;
+                }
+                if (kickDirection.x !== 0 || kickDirection.y !== 0) {
+                    const magnitude = Math.sqrt(kickDirection.x ** 2 + kickDirection.y ** 2);
+                    ball.vx += (kickDirection.x / magnitude) * KICK_VELOCITY;
+                    ball.vy += (kickDirection.y / magnitude) * KICK_VELOCITY;
+                    lastKickTime = Date.now();
+                    kickDirection = { x: 0, y: 0 };
+                }
+            }
+        });
+
+        // Physics helpers
+        function resolveCollision(ball, nx, ny, obstacle_vx = 0, obstacle_vy = 0, restitution = 0.8, friction = FRICTION_COEFF) {
+            const r_x = -ball.radius * nx;
+            const r_y = -ball.radius * ny;
+            // Velocity at contact point
+            const v_contact_x = ball.vx - ball.omega * r_y;
+            const v_contact_y = ball.vy + ball.omega * r_x;
+            // Relative velocity
+            const rel_vx = v_contact_x - obstacle_vx;
+            const rel_vy = v_contact_y - obstacle_vy;
+            const v_rel_n = rel_vx * nx + rel_vy * ny;
+            if (v_rel_n >= 0) return 0; // No collision
+            const j_n = -(1 + restitution) * v_rel_n * BALL_MASS;
+            // Tangent direction
+            const v_rel_t_x = rel_vx - v_rel_n * nx;
+            const v_rel_t_y = rel_vy - v_rel_n * ny;
+            const v_rel_t_mag = Math.sqrt(v_rel_t_x**2 + v_rel_t_y**2);
+            let t_x, t_y;
+            if (v_rel_t_mag > 1e-6) {
+                t_x = v_rel_t_x / v_rel_t_mag;
+                t_y = v_rel_t_y / v_rel_t_mag;
+            } else {
+                t_x = -ny;
+                t_y = nx;
+            }
+            const m_eff = BALL_MASS / 3; // For a disk
+            const j_t_desired = -v_rel_t_mag * m_eff;
+            const j_t = Math.max(-friction * Math.abs(j_n), Math.min(friction * Math.abs(j_n), j_t_desired));
+            const total_impulse_x = j_n * nx + j_t * t_x;
+            const total_impulse_y = j_n * ny + j_t * t_y;
+            ball.vx += total_impulse_x / BALL_MASS;
+            ball.vy += total_impulse_y / BALL_MASS;
+            const I = 0.5 * BALL_MASS * ball.radius * ball.radius;
+            ball.omega += (r_x * total_impulse_y - r_y * total_impulse_x) / I;
+            return Math.abs(j_n / BALL_MASS);
+        }
+
+        // Collision detection
+        function checkWallCollision() {
+            let spawn = false;
+            if (ball.x + ball.radius > canvas.width) {
+                ball.x = canvas.width - ball.radius;
+                const impulse = resolveCollision(ball, -1, 0, 0, 0);
+                if (impulse > MIN_IMPULSE_FOR_PARTICLES) spawn = true;
+            } else if (ball.x - ball.radius < 0) {
+                ball.x = ball.radius;
+                const impulse = resolveCollision(ball, 1, 0, 0, 0);
+                if (impulse > MIN_IMPULSE_FOR_PARTICLES) spawn = true;
+            }
+            if (ball.y + ball.radius > canvas.height) {
+                ball.y = canvas.height - ball.radius;
+                const impulse = resolveCollision(ball, 0, -1, 0, 0);
+                if (impulse > MIN_IMPULSE_FOR_PARTICLES) spawn = true;
+            } else if (ball.y - ball.radius < 0) {
+                ball.y = ball.radius;
+                const impulse = resolveCollision(ball, 0, 1, 0, 0);
+                if (impulse > MIN_IMPULSE_FOR_PARTICLES) spawn = true;
+            }
+            if (spawn) spawnParticles(ball.x, ball.y);
+        }
+
+        function checkObstacleCollision() {
+            obstacles.forEach(obstacle => {
+                if (ball.x + ball.radius > obstacle.x && 
+                    ball.x - ball.radius < obstacle.x + obstacle.width &&
+                    ball.y + ball.radius > obstacle.y && 
+                    ball.y - ball.radius < obstacle.y + obstacle.height) {
+                    const dx = ball.x - (obstacle.x + obstacle.width/2);
+                    const dy = ball.y - (obstacle.y + obstacle.height/2);
+                    const nx = Math.abs(dx) > Math.abs(dy) ? Math.sign(dx) : 0;
+                    const ny = Math.abs(dy) > Math.abs(dx) ? Math.sign(dy) : 0;
+                    
+                    if (nx !== 0) ball.x = obstacle.x + (nx > 0 ? obstacle.width + ball.radius : -ball.radius);
+                    if (ny !== 0) ball.y = obstacle.y + (ny > 0 ? obstacle.height + ball.radius : -ball.radius);
+                    
+                    const impulse = resolveCollision(ball, nx, ny, obstacle.vx, 0);
+                    if (impulse > MIN_IMPULSE_FOR_PARTICLES) spawnParticles(ball.x, ball.y);
+                }
+            });
+        }
+
+        function checkChickenCollision() {
+            const chickenX = chicken.baseX + Math.sin(Date.now() * chicken.speed) * chicken.amplitude;
+            if (ball.x + ball.radius > chickenX && 
+                ball.x - ball.radius < chickenX + chicken.width &&
+                ball.y + ball.radius > chicken.y && 
+                ball.y - ball.radius < chicken.y + chicken.height && 
+                !gameWon) {
+                gameWon = true;
+                victoryTimer = 120;
+                spawnBloodParticles(chickenX + chicken.width/2, chicken.y + chicken.height/2);
+            }
+        }
+
+        // Particle spawning
+        function spawnParticles(x, y) {
+            for (let i = 0; i < 5; i++) particles.push(new Particle(x, y));
+        }
+
+        function spawnBloodParticles(x, y) {
+            for (let i = 0; i < 15; i++) bloodParticles.push(new BloodParticle(x, y));
+        }
+
+        // Reset game
+        function resetGame() {
+            ball.x = 300;
+            ball.y = 300;
+            ball.vx = 0;
+            ball.vy = 0;
+            ball.omega = 0;
+            ball.angle = 0;
+            gameWon = false;
+            victoryTimer = 0;
+            particles.length = 0;
+            bloodParticles.length = 0;
+            createObstacles();
+            chicken.baseX = Math.random() * (canvas.width - chicken.width - chicken.amplitude * 2 - 50) + 25 + chicken.amplitude;
+            chicken.y = Math.random() * 50 + 50;
+        }
+
+        // Draw chicken (unchanged)
+        function drawChicken(x, y) {
+            ctx.fillStyle = '#FFD700';
+            ctx.beginPath();
+            ctx.ellipse(x + chicken.width/2, y + chicken.height/2 + 5, chicken.width/2, chicken.height/2 - 5, 0, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.fillStyle = '#FFC107';
+            ctx.beginPath();
+            ctx.ellipse(x + 10, y + chicken.height/2 + 5, 15, 10, Math.PI / 4, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.beginPath();
+            ctx.ellipse(x + chicken.width - 10, y + chicken.height/2 + 5, 15, 10, -Math.PI / 4, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.fillStyle = '#FFD700';
+            ctx.beginPath();
+            ctx.arc(x + chicken.width/2, y + 15, 15, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.fillStyle = '#FF4500';
+            ctx.beginPath();
+            ctx.moveTo(x + chicken.width/2 + 10, y + 15);
+            ctx.lineTo(x + chicken.width/2 + 20, y + 10);
+            ctx.lineTo(x + chicken.width/2 + 20, y + 20);
+            ctx.fill();
+            ctx.fillStyle = '#FFFFFF';
+            ctx.beginPath();
+            ctx.arc(x + chicken.width/2 + 5, y + 10, 5, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.fillStyle = '#000000';
+            ctx.beginPath();
+            ctx.arc(x + chicken.width/2 + 5, y + 10, 2, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.fillStyle = '#FF0000';
+            ctx.beginPath();
+            ctx.moveTo(x + chicken.width/2, y);
+            ctx.quadraticCurveTo(x + chicken.width/2 - 5, y - 10, x + chicken.width/2 - 10, y);
+            ctx.quadraticCurveTo(x + chicken.width/2 - 5, y - 5, x + chicken.width/2, y);
+            ctx.quadraticCurveTo(x + chicken.width/2 + 5, y - 10, x + chicken.width/2 + 10, y);
+            ctx.fill();
+            ctx.fillStyle = '#FF4500';
+            ctx.beginPath();
+            ctx.moveTo(x + chicken.width/2 - 5, y + chicken.height);
+            ctx.lineTo(x + chicken.width/2 - 10, y + chicken.height + 10);
+            ctx.lineTo(x + chicken.width/2, y + chicken.height + 10);
+            ctx.fill();
+            ctx.beginPath();
+            ctx.moveTo(x + chicken.width/2 + 5, y + chicken.height);
+            ctx.lineTo(x + chicken.width/2 + 10, y + chicken.height + 10);
+            ctx.lineTo(x + chicken.width/2, y + chicken.height + 10);
+            ctx.fill();
+            ctx.shadowBlur = 15;
+            ctx.shadowColor = 'rgba(0,0,0,0.2)';
+            ctx.fillStyle = 'rgba(0,0,0,0.1)';
+            ctx.fillRect(x - 5, y + chicken.height + 10, chicken.width + 10, 5);
+            ctx.shadowBlur = 0;
+        }
+
+        // Update physics and game state
+        function update(dt) {
+            if (!gameWon) {
+                ball.vy += GRAVITY * dt;
+                
+                // Add air resistance
+                ball.vx *= DRAG_COEFF;
+                ball.vy *= DRAG_COEFF;
+                
+                // Apply Magnus effect
+                const magnus_force_x = MAGNUS_COEFF * ball.omega * ball.vy;
+                const magnus_force_y = -MAGNUS_COEFF * ball.omega * ball.vx;
+                ball.vx += magnus_force_x * dt;
+                ball.vy += magnus_force_y * dt;
+                
+                ball.x += ball.vx * dt;
+                ball.y += ball.vy * dt;
+                ball.angle += ball.omega * dt; // Update angle for spin visualization
+                
+                obstacles.forEach(obstacle => {
+                    const phase = Date.now() * obstacle.speed;
+                    obstacle.x = obstacle.baseX + Math.sin(phase) * obstacle.amplitude;
+                    obstacle.vx = obstacle.amplitude * obstacle.speed * Math.cos(phase);
+                });
+                
+                checkWallCollision();
+                checkObstacleCollision();
+                checkChickenCollision();
+            } else if (victoryTimer > 0) {
+                victoryTimer -= 60 * dt;
+                if (victoryTimer <= 0) resetGame();
+            }
+            
+            particles.forEach((p, i) => {
+                p.update(dt);
+                if (p.life <= 0) particles.splice(i, 1);
+            });
+            bloodParticles.forEach((bp, i) => {
+                bp.update(dt);
+                if (bp.life <= 0) bloodParticles.splice(i, 1);
+            });
+        }
+
+        // Draw everything
+        function draw() {
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+            
+            ctx.fillStyle = 'rgba(255, 255, 255, 0.3)';
+            ctx.beginPath();
+            ctx.arc(100, 50, 40, 0, Math.PI * 2);
+            ctx.arc(140, 60, 30, 0, Math.PI * 2);
+            ctx.arc(80, 70, 35, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.beginPath();
+            ctx.arc(500, 80, 45, 0, Math.PI * 2);
+            ctx.arc(540, 90, 35, 0, Math.PI * 2);
+            ctx.arc(480, 100, 30, 0, Math.PI * 2);
+            ctx.fill();
+
+            obstacles.forEach(obstacle => {
+                ctx.shadowBlur = 10;
+                ctx.shadowColor = 'rgba(0,0,0,0.3)';
+                ctx.fillStyle = obstacle.color;
+                ctx.fillRect(obstacle.x, obstacle.y, obstacle.width, obstacle.height);
+                ctx.fillStyle = '#FFFFFF';
+                ctx.beginPath();
+                ctx.arc(obstacle.x + obstacle.width/4, obstacle.y + obstacle.height/4, 5, 0, Math.PI * 2);
+                ctx.arc(obstacle.x + obstacle.width*3/4, obstacle.y + obstacle.height/4, 5, 0, Math.PI * 2);
+                ctx.fill();
+                ctx.fillStyle = '#000000';
+                ctx.beginPath();
+                ctx.arc(obstacle.x + obstacle.width/4 + Math.sin(Date.now() * 0.005) * 2, obstacle.y + obstacle.height/4, 2, 0, Math.PI * 2);
+                ctx.arc(obstacle.x + obstacle.width*3/4 + Math.sin(Date.now() * 0.005) * 2, obstacle.y + obstacle.height/4, 2, 0, Math.PI * 2);
+                ctx.fill();
+                ctx.shadowBlur = 0;
+                    // Draw mouth based on expression
+    const mouthY = obstacle.y + obstacle.height * 3 / 4; // Position the mouth near the bottom of the obstacle
+    ctx.fillStyle = '#000000'; // Black color for the mouth
+    if (obstacle.expression === 'smile') {
+        ctx.beginPath();
+        ctx.arc(obstacle.x + obstacle.width / 2, mouthY, obstacle.width / 4, 0, Math.PI, false); // Upward arc
+        ctx.stroke();
+    } else if (obstacle.expression === 'frown') {
+        ctx.beginPath();
+        ctx.arc(obstacle.x + obstacle.width / 2, mouthY + obstacle.height / 4, obstacle.width / 4, 0, Math.PI, true); // Downward arc
+        ctx.stroke();
+    } else if (obstacle.expression === 'neutral') {
+        ctx.beginPath();
+        ctx.moveTo(obstacle.x + obstacle.width / 4, mouthY); // Left end of straight line
+        ctx.lineTo(obstacle.x + obstacle.width * 3 / 4, mouthY); // Right end of straight line
+        ctx.stroke();
+    } else if (obstacle.expression === 'surprise') {
+        ctx.beginPath();
+        ctx.arc(obstacle.x + obstacle.width / 2, mouthY, obstacle.width / 8, 0, Math.PI * 2); // Small circle
+        ctx.fill();
+    }
+            });
+            
+            const chickenX = chicken.baseX + Math.sin(Date.now() * chicken.speed) * chicken.amplitude;
+            if (!gameWon) drawChicken(chickenX, chicken.y);
+            
+            const lateralSpeed = Math.abs(ball.vx);
+            const ballGradient = ctx.createRadialGradient(ball.x, ball.y, 0, ball.x, ball.y, ball.radius);
+            ballGradient.addColorStop(0, '#ff6b6b');
+            ballGradient.addColorStop(1, '#ff8787');
+            ctx.fillStyle = ballGradient;
+            ctx.shadowBlur = 15;
+            ctx.shadowColor = 'rgba(255,100,100,0.5)';
+            ctx.beginPath();
+            ctx.arc(ball.x, ball.y, ball.radius, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.strokeStyle = '#FFFFFF';
+            ctx.lineWidth = 2;
+            ctx.beginPath();
+            for (let i = 0; i < 4; i++) {
+                const angle = ball.angle + i * Math.PI / 2;
+                ctx.moveTo(ball.x + Math.cos(angle) * ball.radius, ball.y + Math.sin(angle) * ball.radius);
+                ctx.lineTo(ball.x + Math.cos(angle + Math.PI) * ball.radius, ball.y + Math.sin(angle + Math.PI) * ball.radius);
+            }
+            ctx.stroke();
+          
+            ctx.shadowBlur = 0;
+            
+            particles.forEach(p => p.draw());
+            bloodParticles.forEach(bp => bp.draw());
+            
+            if (gameWon) {
+                ctx.fillStyle = `rgba(0,0,0,${Math.min(0.7, victoryTimer/60)})`;
+                ctx.fillRect(0, 0, canvas.width, canvas.height);
+                ctx.fillStyle = 'gold';
+                ctx.font = '48px Arial';
+                ctx.textAlign = 'center';
+                const scale = 1 + Math.sin(victoryTimer * 0.1) * 0.2;
+                ctx.save();
+                ctx.translate(canvas.width/2, canvas.height/2);
+                ctx.scale(scale, scale);
+                ctx.fillText("THAT'S A DEAD CHICKEN!", 0, 0);
+                ctx.restore();
+                if (victoryTimer % 5 === 0) {
+                    for (let i = 0; i < 3; i++) {
+                        particles.push(new Particle(
+                            Math.random() * canvas.width,
+                            Math.random() * canvas.height/2
+                        ));
+                    }
+                }
+            }
+        }
+
+        // Game loop
+        function gameLoop(currentTime) {
+            const deltaTime = Math.min((currentTime - lastTime) / 1000, 0.1);
+            lastTime = currentTime;
+            accumulator += deltaTime;
+
+            while (accumulator >= TIME_STEP) {
+                update(TIME_STEP);
+                accumulator -= TIME_STEP;
+            }
+            draw();
+            requestAnimationFrame(gameLoop);
+        }
+
+        // Start the game
+        function startGame() {
+            if (!canvas.getContext) {
+                console.error("Canvas not supported!");
+                return;
+            }
+            createObstacles();
+            requestAnimationFrame(gameLoop);
+        }
+
+        window.addEventListener('DOMContentLoaded', startGame);
+    </script>
+</body>
+</html>
