@@ -89,6 +89,7 @@
         let lastKickTime = 0;
         let accumulator = 0;
         let lastTime = performance.now();
+        let ballTrail = []; // For trail effect
 
         // Gravity slider setup
         const gravitySlider = document.getElementById('gravitySlider');
@@ -112,11 +113,12 @@
                     baseX: 0,
                     speed: Math.random() * 0.005 + 0.005,
                     amplitude: Math.random() * 50 + 30,
-                    expression: expressions[Math.floor(Math.random() * expressions.length)]
-
+                    expression: expressions[Math.floor(Math.random() * expressions.length)],
+                    blinkTimer: Math.random() * 300 + 100,
+                    blinkState: false,
+                    blinkDuration: 0
                 });
                 obstacles[i].baseX = obstacles[i].x;
-                
             }
         }
 
@@ -126,10 +128,10 @@
                 this.x = x;
                 this.y = y;
                 this.size = Math.random() * 5 + 2;
-                this.vx = (Math.random() - 0.5) * 8;
-                this.vy = (Math.random() - 0.5) * 8;
-                this.life = 20;
-                this.color = `hsl(${180 + Math.random() * 60}, 80%, 60%)`; // Blue-green range (180–240)
+                this.vx = (Math.random() - 0.5) * 2;
+                this.vy = Math.random() * 2 + 1;
+                this.life = 120;
+                this.color = `hsl(${Math.random() * 360}, 100%, 50%)`;
             }
             update(dt) {
                 this.x += this.vx * dt * 60;
@@ -137,7 +139,7 @@
                 this.life -= dt * 60;
             }
             draw() {
-                ctx.fillStyle = `${this.color}${Math.floor(this.life/20 * 255).toString(16).padStart(2, '0')}`;
+                ctx.fillStyle = this.color;
                 ctx.beginPath();
                 ctx.arc(this.x, this.y, this.size, 0, Math.PI * 2);
                 ctx.fill();
@@ -385,14 +387,38 @@
                     const phase = Date.now() * obstacle.speed;
                     obstacle.x = obstacle.baseX + Math.sin(phase) * obstacle.amplitude;
                     obstacle.vx = obstacle.amplitude * obstacle.speed * Math.cos(phase);
+                    
+                    // Update blink timer
+                    obstacle.blinkTimer -= 1;
+                    if (obstacle.blinkTimer <= 0) {
+                        obstacle.blinkState = true;
+                        obstacle.blinkDuration = 5; // blink for 5 frames
+                        obstacle.blinkTimer = Math.random() * 300 + 100;
+                    }
+                    if (obstacle.blinkState) {
+                        obstacle.blinkDuration -= 1;
+                        if (obstacle.blinkDuration <= 0) {
+                            obstacle.blinkState = false;
+                        }
+                    }
                 });
                 
                 checkWallCollision();
                 checkObstacleCollision();
                 checkChickenCollision();
+                
+                // Update ball trail
+                ballTrail.push({x: ball.x, y: ball.y});
+                if (ballTrail.length > 5) ballTrail.shift();
             } else if (victoryTimer > 0) {
                 victoryTimer -= 60 * dt;
                 if (victoryTimer <= 0) resetGame();
+                // Spawn confetti
+                if (victoryTimer % 5 === 0) {
+                    for (let i = 0; i < 3; i++) {
+                        particles.push(new Particle(Math.random() * canvas.width, 0));
+                    }
+                }
             }
             
             particles.forEach((p, i) => {
@@ -409,61 +435,93 @@
         function draw() {
             ctx.clearRect(0, 0, canvas.width, canvas.height);
             
+            // Draw fluffier clouds
             ctx.fillStyle = 'rgba(255, 255, 255, 0.3)';
             ctx.beginPath();
-            ctx.arc(100, 50, 40, 0, Math.PI * 2);
-            ctx.arc(140, 60, 30, 0, Math.PI * 2);
-            ctx.arc(80, 70, 35, 0, Math.PI * 2);
-            ctx.fill();
-            ctx.beginPath();
-            ctx.arc(500, 80, 45, 0, Math.PI * 2);
-            ctx.arc(540, 90, 35, 0, Math.PI * 2);
-            ctx.arc(480, 100, 30, 0, Math.PI * 2);
+            const cloudPositions = [
+                {x: 100, y: 50},
+                {x: 500, y: 80},
+            ];
+            cloudPositions.forEach(pos => {
+                for (let i = -1; i <= 1; i++) {
+                    for (let j = -1; j <= 1; j++) {
+                        const offsetX = i * 20;
+                        const offsetY = j * 10;
+                        ctx.ellipse(pos.x + offsetX, pos.y + offsetY, 40, 30, 0, 0, Math.PI * 2);
+                    }
+                }
+            });
             ctx.fill();
 
+            // Draw obstacles with blinking eyes
             obstacles.forEach(obstacle => {
                 ctx.shadowBlur = 10;
                 ctx.shadowColor = 'rgba(0,0,0,0.3)';
                 ctx.fillStyle = obstacle.color;
                 ctx.fillRect(obstacle.x, obstacle.y, obstacle.width, obstacle.height);
-                ctx.fillStyle = '#FFFFFF';
-                ctx.beginPath();
-                ctx.arc(obstacle.x + obstacle.width/4, obstacle.y + obstacle.height/4, 5, 0, Math.PI * 2);
-                ctx.arc(obstacle.x + obstacle.width*3/4, obstacle.y + obstacle.height/4, 5, 0, Math.PI * 2);
-                ctx.fill();
+                if (obstacle.blinkState) {
+                    // Draw closed eyes (lines)
+                    ctx.strokeStyle = '#000000';
+                    ctx.lineWidth = 2;
+                    ctx.beginPath();
+                    ctx.moveTo(obstacle.x + obstacle.width/4 - 5, obstacle.y + obstacle.height/4);
+                    ctx.lineTo(obstacle.x + obstacle.width/4 + 5, obstacle.y + obstacle.height/4);
+                    ctx.moveTo(obstacle.x + obstacle.width*3/4 - 5, obstacle.y + obstacle.height/4);
+                    ctx.lineTo(obstacle.x + obstacle.width*3/4 + 5, obstacle.y + obstacle.height/4);
+                    ctx.stroke();
+                } else {
+                    // Draw open eyes
+                    ctx.fillStyle = '#FFFFFF';
+                    ctx.beginPath();
+                    ctx.arc(obstacle.x + obstacle.width/4, obstacle.y + obstacle.height/4, 5, 0, Math.PI * 2);
+                    ctx.arc(obstacle.x + obstacle.width*3/4, obstacle.y + obstacle.height/4, 5, 0, Math.PI * 2);
+                    ctx.fill();
+                    ctx.fillStyle = '#000000';
+                    ctx.beginPath();
+                    ctx.arc(obstacle.x + obstacle.width/4 + Math.sin(Date.now() * 0.005) * 2, obstacle.y + obstacle.height/4, 2, 0, Math.PI * 2);
+                    ctx.arc(obstacle.x + obstacle.width*3/4 + Math.sin(Date.now() * 0.005) * 2, obstacle.y + obstacle.height/4, 2, 0, Math.PI * 2);
+                    ctx.fill();
+                }
+                // Draw mouth based on expression
+                const mouthY = obstacle.y + obstacle.height * 3 / 4;
                 ctx.fillStyle = '#000000';
-                ctx.beginPath();
-                ctx.arc(obstacle.x + obstacle.width/4 + Math.sin(Date.now() * 0.005) * 2, obstacle.y + obstacle.height/4, 2, 0, Math.PI * 2);
-                ctx.arc(obstacle.x + obstacle.width*3/4 + Math.sin(Date.now() * 0.005) * 2, obstacle.y + obstacle.height/4, 2, 0, Math.PI * 2);
-                ctx.fill();
+                if (obstacle.expression === 'smile') {
+                    ctx.beginPath();
+                    ctx.arc(obstacle.x + obstacle.width / 2, mouthY, obstacle.width / 4, 0, Math.PI, false);
+                    ctx.stroke();
+                } else if (obstacle.expression === 'frown') {
+                    ctx.beginPath();
+                    ctx.arc(obstacle.x + obstacle.width / 2, mouthY + obstacle.height / 4, obstacle.width / 4, 0, Math.PI, true);
+                    ctx.stroke();
+                } else if (obstacle.expression === 'neutral') {
+                    ctx.beginPath();
+                    ctx.moveTo(obstacle.x + obstacle.width / 4, mouthY);
+                    ctx.lineTo(obstacle.x + obstacle.width * 3 / 4, mouthY);
+                    ctx.stroke();
+                } else if (obstacle.expression === 'surprise') {
+                    ctx.beginPath();
+                    ctx.arc(obstacle.x + obstacle.width / 2, mouthY, obstacle.width / 8, 0, Math.PI * 2);
+                    ctx.fill();
+                }
                 ctx.shadowBlur = 0;
-                    // Draw mouth based on expression
-    const mouthY = obstacle.y + obstacle.height * 3 / 4; // Position the mouth near the bottom of the obstacle
-    ctx.fillStyle = '#000000'; // Black color for the mouth
-    if (obstacle.expression === 'smile') {
-        ctx.beginPath();
-        ctx.arc(obstacle.x + obstacle.width / 2, mouthY, obstacle.width / 4, 0, Math.PI, false); // Upward arc
-        ctx.stroke();
-    } else if (obstacle.expression === 'frown') {
-        ctx.beginPath();
-        ctx.arc(obstacle.x + obstacle.width / 2, mouthY + obstacle.height / 4, obstacle.width / 4, 0, Math.PI, true); // Downward arc
-        ctx.stroke();
-    } else if (obstacle.expression === 'neutral') {
-        ctx.beginPath();
-        ctx.moveTo(obstacle.x + obstacle.width / 4, mouthY); // Left end of straight line
-        ctx.lineTo(obstacle.x + obstacle.width * 3 / 4, mouthY); // Right end of straight line
-        ctx.stroke();
-    } else if (obstacle.expression === 'surprise') {
-        ctx.beginPath();
-        ctx.arc(obstacle.x + obstacle.width / 2, mouthY, obstacle.width / 8, 0, Math.PI * 2); // Small circle
-        ctx.fill();
-    }
             });
             
             const chickenX = chicken.baseX + Math.sin(Date.now() * chicken.speed) * chicken.amplitude;
             if (!gameWon) drawChicken(chickenX, chicken.y);
             
-            const lateralSpeed = Math.abs(ball.vx);
+            // Draw ball trail
+            ctx.save();
+            ctx.globalAlpha = 0.2;
+            ballTrail.forEach((pos, index) => {
+                const alpha = (index + 1) / ballTrail.length;
+                ctx.fillStyle = `rgba(255, 100, 100, ${alpha})`;
+                ctx.beginPath();
+                ctx.arc(pos.x, pos.y, ball.radius, 0, Math.PI * 2);
+                ctx.fill();
+            });
+            ctx.restore();
+            
+            // Draw ball
             const ballGradient = ctx.createRadialGradient(ball.x, ball.y, 0, ball.x, ball.y, ball.radius);
             ballGradient.addColorStop(0, '#ff6b6b');
             ballGradient.addColorStop(1, '#ff8787');
@@ -482,7 +540,6 @@
                 ctx.lineTo(ball.x + Math.cos(angle + Math.PI) * ball.radius, ball.y + Math.sin(angle + Math.PI) * ball.radius);
             }
             ctx.stroke();
-          
             ctx.shadowBlur = 0;
             
             particles.forEach(p => p.draw());
@@ -500,14 +557,6 @@
                 ctx.scale(scale, scale);
                 ctx.fillText("THAT'S A DEAD CHICKEN!", 0, 0);
                 ctx.restore();
-                if (victoryTimer % 5 === 0) {
-                    for (let i = 0; i < 3; i++) {
-                        particles.push(new Particle(
-                            Math.random() * canvas.width,
-                            Math.random() * canvas.height/2
-                        ));
-                    }
-                }
             }
         }
 
